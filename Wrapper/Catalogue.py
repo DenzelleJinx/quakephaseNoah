@@ -8,11 +8,18 @@ import pandas as pd
 import sys
 import psutil
 from obspy.core import Stream, Trace
-from quakephase import quakephase
+
 import seisbench
 import gc
 from multiprocessing import shared_memory
 
+parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+
+# Add the parent directory to the system path
+sys.path.append(parent_dir)
+
+# Now you can import the quakephase module
+from quakephaseNoah import quakephase
 
 class Catalogue:
     def __init__(self, sensors=None, samplingRate=None, channel=None):
@@ -138,21 +145,23 @@ class Catalogue:
                 self._clear_memory()
 
     def _load_data_tpc5_internal(self, path, num_samples_per_batch, hdf5File=None, batch_index=None):
-        if hdf5File is None:
-            with h5py.File(path, 'r') as hdf5File:
+        try:
+            print(f"Loading data batch {batch_index} from {path}...")
+            if hdf5File is None:
+                with h5py.File(path, 'r') as hdf5File:
+                    stream = self._process_tpc5_file(hdf5File, num_samples_per_batch, batch_index)
+            else:
                 stream = self._process_tpc5_file(hdf5File, num_samples_per_batch, batch_index)
-        else:
-            stream = self._process_tpc5_file(hdf5File, num_samples_per_batch, batch_index)
 
-        # Convert stream to a format suitable for shared memory
-        for trace in stream:
-            trace_data = trace.data
-            shm = shared_memory.SharedMemory(create=True, size=trace_data.nbytes)
-            shm_array = np.ndarray(trace_data.shape, dtype=trace_data.dtype, buffer=shm.buf)
-            np.copyto(shm_array, trace_data)
-            trace.shared_memory_name = shm.name  # Store shared memory name in the trace for later use
+            print(f"Data batch {batch_index} loaded successfully")
+            return stream
+        except Exception as e:
+            print(f"Error loading data for batch {batch_index}: {e}")
+            return None
 
-        return stream
+
+
+
 
     def _process_tpc5_file(self, hdf5File, num_samples_per_batch, batch_index):
         stream = Stream()
@@ -229,14 +238,17 @@ class Catalogue:
             results = list(executor.map(self.applyToEventHelper, args))
         
         for key, result in results:
-            outputDictionary[key] = result
+            if result is not None:
+                outputDictionary[key] = result
+            else:
+                print(f"Processing failed for event {key}")
         print(f"Memory usage after processing: {self.get_memory_usage():.2f} MB")
         
         elapsedTime = time.time() - startTime
         print(f'time taken to apply quakephase: {elapsedTime:.2f} seconds')
-        del results
         self._clear_memory()
         return outputDictionary
+
 
 
 
@@ -267,24 +279,27 @@ class Catalogue:
         return outputDictionary
 
     def applyToEvent(self, eventKey, eventData, parameters):
-        # Access shared memory in eventData
-        for trace in eventData:
-            shm = shared_memory.SharedMemory(name=trace.shared_memory_name)
-            trace_data = np.ndarray(trace.data.shape, dtype=trace.data.dtype, buffer=shm.buf)
-            trace.data = trace_data  # Reassign data from shared memory
+        try:
+            print(f"Processing event {eventKey}...")
 
-        result = quakephase.apply(eventData, parameters)
-        
-        # Cleanup shared memory
-        for trace in eventData:
-            shm.close()
-            shm.unlink()
-        
-        return eventKey, result
+            result = quakephase.apply(eventData, parameters)
+            print(f"Quakephase applied for event {eventKey}")
+
+            return eventKey, result
+        except Exception as e:
+            print(f"Error processing event {eventKey}: {e}")
+            return eventKey, None
+
+
+
+
+
 
     def applyToEventHelper(self, args):
         eventKey, eventData, parameters = args
         return self.applyToEvent(eventKey, eventData, parameters)
+
+
 
 
     def saveData(self, quakePhaseOutput=None, saveMethod='pickle', fileName='Catalogue'):
