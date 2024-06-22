@@ -174,15 +174,18 @@ class Catalogue:
 
         for sensorIndex in range(1, len(self.sensors) + 1):
             channelPath = channelPathTemplate.format(sensorIndex)
-            traceData = np.array(hdf5File[channelPath][start_sample:end_sample])  # Load batch of data
+            traceData = np.array(hdf5File[channelPath][start_sample:end_sample])
             trace = Trace(data=traceData)
             trace.stats.station = self.sensors[sensorIndex - 1]
             trace.stats.sampling_rate = self.samplingRate
             trace.stats.channel = self.channel
             stream.append(trace)
-            del traceData
+            del traceData  # Explicitly delete traceData to free memory
+            del trace
+            gc.collect()  # Force garbage collection
 
         return stream
+
 
 
     def _clear_memory(self):
@@ -263,15 +266,12 @@ class Catalogue:
         outputDictionary = {}
         
         for idx, key in enumerate(self.events):
-            for trace in self.events[key]:
-                print(f"Original trace length: {len(trace.data)}, Memory usage: {sys.getsizeof(trace.data) / (1024 ** 2):.2f} MB")
-    
+            
             startEventTime = time.time()
+            print(f"applying quakephase to event {key}")
             outputDictionary[key] = quakephase.apply(self.events[key], parameters)
             print(f'time taken to apply quakephase to event {key}: {time.time() - startEventTime:.2f} seconds')
 
-            if idx % 10 == 0:
-                print(f"Memory usage after processing {idx + 1} events: {self.get_memory_usage():.2f} MB")
             self._clear_memory()
             
         elapsedTime = time.time() - startTime

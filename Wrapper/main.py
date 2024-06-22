@@ -49,17 +49,17 @@ def run_quakephase(parameters, path):
     newCatalogue = Catalogue()
 
     # Load data
-    newCatalogue.loadData(path=path, isDataFile=True)
+    newCatalogue.loadData(path=path, isDataFile=True, num_batches=10)
 
     # Apply quakephase
-    output = newCatalogue.applyQuakephase(parameters=parameters, parallelProcessing=True ,maxWorkers=10)
+    output = newCatalogue.applyQuakephase(parameters=parameters)
 
     # Save results
-    newCatalogue.saveData(quakePhaseOutput=output, fileName='tpc5Output')
+    newCatalogue.saveData(quakePhaseOutput=output, fileName='tpc5_286aOutput')
 
 def main():
-    parameters = 'C:/Noah Project/quakephaseNoah/Wrapper/parameters.yaml'
-    path = "C:/Noah Project/Parsed_Data/LBQ-20220331-I-BESND_086a.tpc5"
+    parameters = '/cluster/scratch/nmunro/parameters.yaml'
+    path = '/cluster/scratch/nmunro/tpc5File/LBQ-20220331-I-BESND_086a.tpc5'
     run_quakephase(parameters, path)
 
 if __name__ == "__main__":
