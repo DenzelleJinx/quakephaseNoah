@@ -49,7 +49,7 @@ def run_quakephase(parameters, path):
     newCatalogue = Catalogue()
 
     # Load data
-    newCatalogue.loadData(path=path, isDataFile=True, num_batches=10)
+    newCatalogue.loadData(path=path, isDataFile=True)
 
     # Apply quakephase
     output = newCatalogue.applyQuakephase(parameters=parameters)

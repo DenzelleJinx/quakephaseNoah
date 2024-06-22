@@ -8,10 +8,11 @@ import pandas as pd
 import sys
 import psutil
 from obspy.core import Stream, Trace
+from dask.distributed import Client, LocalCluster, as_completed
+import dask
 
 import seisbench
 import gc
-from multiprocessing import shared_memory
 
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
@@ -45,6 +46,7 @@ class Catalogue:
 
 
     def _load_data_file(self, path, num_batches=None):
+        print('loading data')
         fileEnding = path.split('.')[-1]
         if fileEnding == 'txt':
             return self._load_data_txt(path)
@@ -127,6 +129,7 @@ class Catalogue:
         path (str): Path to the .tpc5 file
         num_batches (int): Number of batches to divide the data into.
         """
+        print(f'loading tpc5 file in {num_batches} batches')
         fileBaseName = os.path.basename(path)
         fileNumber = ((fileBaseName.split('_')[-1]).split('.')[0]).lstrip('tpc5')
         
@@ -220,33 +223,30 @@ class Catalogue:
         else:
             raise TypeError("Input numberOfEvents must be an integer greater than zero")
 
-    def applyQuakephase(self, parameters, useRegularPort=False, parallelProcessing=False, maxWorkers=None):
+    def applyQuakephase(self, parameters, useRegularPort=False, parallelProcessing=False):
         print('applying quakephase')
         if parallelProcessing:
-            return self._apply_quakephase_parallel(parameters, useRegularPort, maxWorkers)
+            return self._apply_quakephase_parallel(parameters, useRegularPort)
         else:
             return self._apply_quakephase_sequential(parameters, useRegularPort)
 
-    def _apply_quakephase_parallel(self, parameters, useRegularPort=False, maxWorkers=None):
-        print('runningparallel')
+    def _apply_quakephase_parallel(self, parameters, useRegularPort=False):
+        print('running parallel')
+        client = Client()  # This ensures tasks are distributed across available cores
+
         if useRegularPort:
             seisbench.use_backup_repository()
         startTime = time.time()
-        outputDictionary = {}
 
-        eventKeys = list(self.events.keys())
-        
-        with concurrent.futures.ProcessPoolExecutor(max_workers=maxWorkers) as executor:
-            args = [(key, self.events[key], parameters) for key in eventKeys]
-            results = list(executor.map(self.applyToEventHelper, args))
-        
-        for key, result in results:
-            if result is not None:
-                outputDictionary[key] = result
-            else:
-                print(f"Processing failed for event {key}")
+        # Creating delayed tasks
+        futures = {key: dask.delayed(quakephase.apply)(stream, parameters) for key, stream in self.events.items()}
+
+        # Computing results in parallel
+        results = dask.compute(*futures.values())
+
+        outputDictionary = {key: result for key, result in zip(futures.keys(), results)}
+
         print(f"Memory usage after processing: {self.get_memory_usage():.2f} MB")
-        
         elapsedTime = time.time() - startTime
         print(f'time taken to apply quakephase: {elapsedTime:.2f} seconds')
         self._clear_memory()
@@ -265,7 +265,7 @@ class Catalogue:
         startTime = time.time()
         outputDictionary = {}
         
-        for idx, key in enumerate(self.events):
+        for key in self.events:
             
             startEventTime = time.time()
             print(f"applying quakephase to event {key}")
