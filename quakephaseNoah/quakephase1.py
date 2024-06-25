@@ -8,6 +8,11 @@ from .streamprocess import stfilter, check_compile_stream, expend_trace, sbresam
 from .pfinput import load_check_input
 from .xpick import get_picks
 import gc
+from obspy import Stream
+
+import dask
+from dask import delayed, compute
+from dask.distributed import Client
 
 
 def load_models(paras):
@@ -58,20 +63,52 @@ def apply(data, file_para='parameters.yaml'):
     station_list = list(set(itr.stats.station for itr in data))  # remove duplicates
 
     # apply model to data streams, loop over each station
-    for istation in station_list:
-        istream = check_compile_stream(data.select(station=istation))  # check and compile stream, maybe can put intp apply_per_station
+    # for istation in station_list:
+    #     istream = check_compile_stream(data.select(station=istation))  # check and compile stream, maybe can put intp apply_per_station
+    #     ioutput = apply_per_station(istream, phasemodels, paras)
+
+    #     # append results to output
+    #     if (paras['output'].lower() == 'prob') or (paras['output'].lower() == 'all'):
+    #         output['prob'] += ioutput['prob']
+    #     if (paras['output'].lower() == 'pick') or (paras['output'].lower() == 'all'):
+    #         output['pick'] += ioutput['pick']
+        
+    #     # delete istream and ioutput to save memory
+    #     del ioutput
+    #     del istream
+    #     gc.collect()
+    client = Client()
+
+    def process_station(istation, data, phasemodels, paras):
+        istream = check_compile_stream(data.select(station=istation))  # check and compile stream
         ioutput = apply_per_station(istream, phasemodels, paras)
 
-        # append results to output
-        if (paras['output'].lower() == 'prob') or (paras['output'].lower() == 'all'):
-            output['prob'] += ioutput['prob']
-        if (paras['output'].lower() == 'pick') or (paras['output'].lower() == 'all'):
-            output['pick'] += ioutput['pick']
-        
+        # Collect the traces and picks to be added to the main output
+        prob_trace = ioutput['prob'] if (paras['output'].lower() == 'prob') or (paras['output'].lower() == 'all') else None
+        pick_list = ioutput['pick'] if (paras['output'].lower() == 'pick') or (paras['output'].lower() == 'all') else None
+
         # delete istream and ioutput to save memory
         del ioutput
         del istream
         gc.collect()
+
+        return prob_trace, pick_list
+    
+    tasks = [delayed(process_station)(istation, data, phasemodels, paras) for istation in station_list]
+
+    # Compute the results in parallel
+    results = compute(*tasks)
+
+    # Aggregate the results
+    output = {'prob': Stream(), 'pick': []}
+    for prob_trace, pick_list in results:
+        if prob_trace is not None:
+            output['prob'] += prob_trace
+        if pick_list is not None:
+            output['pick'].extend(pick_list)
+
+    # Shutdown the Dask client
+    client.close()
 
     if (paras['output'].lower() == 'pick') or (paras['output'].lower() == 'all'):
         output['pick'] = sbu.PickList(sorted(output['pick']))  # sort picks

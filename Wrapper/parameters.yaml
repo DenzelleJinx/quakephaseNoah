@@ -9,7 +9,7 @@ MLmodel:
     # - SeisBench,PhaseNet,obs
     # - SeisBench,PhaseNet,scedc
 
-    - SeisBench,EQT,original
+    # - SeisBench,EQT,original
     # - SeisBench,EQT,stead
     # - SeisBench,EQT,ethz
     # - SeisBench,EQT,iquique
@@ -30,9 +30,9 @@ rescaling:
 
 frequency: 
     - None
-    - [1, 70000]
+    # - [1, 70000]
     - [1, 100000]
-    - [1, 1000000]
+    # - [1, 1000000]
     # use one that is same as sta/lta triggering
 
     # - [20000, 1000000]
@@ -45,9 +45,9 @@ ensemble: max
 
 pick:
     method: threshold  # Add this line with the appropriate method
-    P_threshold: 0.1
+    P_threshold: 0
     S_threshold: 1
 
-output: all  # pick or prob
+output: prob  # pick or prob
 
 prob_sampling_rate: None  # None or float/int

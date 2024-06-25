@@ -3,7 +3,9 @@ import pstats
 import psutil
 import timeit
 import os
-from Catalogue import Catalogue
+from Catalogue import Catalogue, average_traces, multiply_traces
+import gc
+import pickle
 
 def profile_code(func):
     def wrapper(*args, **kwargs):
@@ -55,10 +57,19 @@ def run_quakephase(parameters, path):
     output = newCatalogue.applyQuakephase(parameters=parameters)
 
     # Save results
-    newCatalogue.saveData(quakePhaseOutput=output, fileName='tpc5_286aOutput')
+    combined_stream = newCatalogue.combine_streams(output)
+    del output
+    gc.collect()
+    total_out = {}
+    total_out['avg'] = average_traces(combined_stream)
+    total_out['multiplied'] = multiply_traces(combined_stream)
+    del combined_stream
+    gc.collect()
 
+    with open('/cluster/scratch/nmunro/onlyPhaseNet_100kHz.pickle', 'wb') as file:
+        pickle.dump(combined_stream, file)
 def main():
-    parameters = '/cluster/scratch/nmunro/parameters.yaml'
+    parameters = '/cluster/scratch/nmunro/quakephaseNoah/Wrapper/parameters.yaml'
     path = '/cluster/scratch/nmunro/tpc5File/LBQ-20220331-I-BESND_086a.tpc5'
     run_quakephase(parameters, path)
 

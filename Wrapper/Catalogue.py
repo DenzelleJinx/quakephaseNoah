@@ -7,19 +7,27 @@ import time
 import pandas as pd
 import sys
 import psutil
-from obspy.core import Stream, Trace
+from obspy.core import Stream, Trace, UTCDateTime
+from dask.distributed import Client, LocalCluster, as_completed
+import dask
+from quakephase import quakephase
 
 import seisbench
 import gc
-from multiprocessing import shared_memory
 
-parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+#plotting imports
+import matplotlib.pyplot as plt
 
-# Add the parent directory to the system path
-sys.path.append(parent_dir)
+from obspy import read
+from scipy.signal import find_peaks
 
-# Now you can import the quakephase module
-from quakephaseNoah import quakephase
+# parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+
+# # Add the parent directory to the system path
+# sys.path.append(parent_dir)
+
+# # Now you can import the quakephase module
+# from quakephaseNoah import quakephase1
 
 class Catalogue:
     def __init__(self, sensors=None, samplingRate=None, channel=None):
@@ -45,6 +53,7 @@ class Catalogue:
 
 
     def _load_data_file(self, path, num_batches=None):
+        print('loading data')
         fileEnding = path.split('.')[-1]
         if fileEnding == 'txt':
             return self._load_data_txt(path)
@@ -127,6 +136,7 @@ class Catalogue:
         path (str): Path to the .tpc5 file
         num_batches (int): Number of batches to divide the data into.
         """
+        print(f'loading tpc5 file in {num_batches} batches')
         fileBaseName = os.path.basename(path)
         fileNumber = ((fileBaseName.split('_')[-1]).split('.')[0]).lstrip('tpc5')
         
@@ -171,17 +181,23 @@ class Catalogue:
 
         start_sample = batch_index * num_samples_per_batch
         end_sample = min((batch_index + 1) * num_samples_per_batch, hdf5File[channelPathTemplate.format(1)].shape[0])
-
+        
         for sensorIndex in range(1, len(self.sensors) + 1):
             channelPath = channelPathTemplate.format(sensorIndex)
+            channelPathTime = channelPath.strip('data')
             traceData = np.array(hdf5File[channelPath][start_sample:end_sample])
+            print(type(traceData))
+            startTime = hdf5File[channelPathTime].attrs['startTime']
+            
             trace = Trace(data=traceData)
+            trace.stats.starttime = UTCDateTime(startTime)
             trace.stats.station = self.sensors[sensorIndex - 1]
             trace.stats.sampling_rate = self.samplingRate
             trace.stats.channel = self.channel
             stream.append(trace)
             del traceData  # Explicitly delete traceData to free memory
             del trace
+
             gc.collect()  # Force garbage collection
 
         return stream
@@ -220,62 +236,55 @@ class Catalogue:
         else:
             raise TypeError("Input numberOfEvents must be an integer greater than zero")
 
-    def applyQuakephase(self, parameters, useRegularPort=False, parallelProcessing=False, maxWorkers=None):
+    def applyQuakephase(self, parameters, useRegularPort=False, parallelProcessing=False):
         print('applying quakephase')
         if parallelProcessing:
-            return self._apply_quakephase_parallel(parameters, useRegularPort, maxWorkers)
+            return self._apply_quakephase_parallel(parameters, useRegularPort)
         else:
             return self._apply_quakephase_sequential(parameters, useRegularPort)
 
-    def _apply_quakephase_parallel(self, parameters, useRegularPort=False, maxWorkers=None):
-        print('runningparallel')
+    def _apply_quakephase_parallel(self, parameters, useRegularPort=False):
+        print('running parallel')
+        client = Client()  # This ensures tasks are distributed across available cores
+
         if useRegularPort:
             seisbench.use_backup_repository()
         startTime = time.time()
-        outputDictionary = {}
 
-        eventKeys = list(self.events.keys())
-        
-        with concurrent.futures.ProcessPoolExecutor(max_workers=maxWorkers) as executor:
-            args = [(key, self.events[key], parameters) for key in eventKeys]
-            results = list(executor.map(self.applyToEventHelper, args))
-        
-        for key, result in results:
-            if result is not None:
-                outputDictionary[key] = result
-            else:
-                print(f"Processing failed for event {key}")
+        # Creating delayed tasks
+        futures = {key: dask.delayed(quakephase.apply)(stream, parameters) for key, stream in self.events.items()}
+
+        # Computing results in parallel
+        results = dask.compute(*futures.values())
+
+        outputDictionary = {key: result for key, result in zip(futures.keys(), results)}
+
         print(f"Memory usage after processing: {self.get_memory_usage():.2f} MB")
-        
         elapsedTime = time.time() - startTime
         print(f'time taken to apply quakephase: {elapsedTime:.2f} seconds')
         self._clear_memory()
         return outputDictionary
 
 
-
-
-
-
-
     def _apply_quakephase_sequential(self, parameters, useRegularPort=False):
-
         if useRegularPort:
             seisbench.use_backup_repository()
         startTime = time.time()
         outputDictionary = {}
         
-        for idx, key in enumerate(self.events):
-            
+        for key in self.events:
             startEventTime = time.time()
             print(f"applying quakephase to event {key}")
+            sys.stdout.flush()
             outputDictionary[key] = quakephase.apply(self.events[key], parameters)
             print(f'time taken to apply quakephase to event {key}: {time.time() - startEventTime:.2f} seconds')
+            sys.stdout.flush()
 
             self._clear_memory()
             
         elapsedTime = time.time() - startTime
         print(f'time taken to apply quakephase: {elapsedTime:.2f} seconds')
+        sys.stdout.flush()
         return outputDictionary
 
     def applyToEvent(self, eventKey, eventData, parameters):
@@ -317,6 +326,43 @@ class Catalogue:
         process = psutil.Process(os.getpid())
         mem_info = process.memory_info()
         return mem_info.rss / (1024 ** 2)
+    
+    def combine_streams(self, streams_dict):
+        """
+        Method which combines multiple streams into one
+        """
+        combined_stream = Stream()
+
+        # Iterate through each sensor
+        for station in self.sensors:
+            combined_data = np.array([])
+
+            # Iterate through each stream in the dictionary
+            for key, stream in streams_dict.items():
+                # Find traces with the current station
+                for trace in stream['prob'].select(station=station, channel='prob_P'):
+                    # Concatenate the data
+                    print(np.shape(trace.data))
+                    combined_data = np.concatenate((combined_data, trace.data))
+
+            # Create a new trace with the combined data
+            if combined_data.size > 0:
+                new_trace = Trace(data=combined_data)
+                # Set the station and other stats from the first trace (if needed)
+
+                new_trace.stats.station = station
+
+
+
+
+
+                # Add the new trace to the combined stream
+                combined_stream.append(new_trace)
+
+        return combined_stream
+
+
+
 
 class CatalogueController:
     def __init__(self, catalogue):
@@ -354,75 +400,112 @@ def average_traces(stream):
     averaged_data = stacked_data / num_traces
     averaged_trace = Trace(data=averaged_data)
     averaged_trace.stats = stream[0].stats.copy()
+    averaged_trace.stats.station = 'avg'
     return averaged_trace
 
-def test_apply_quakephase():
-    catalogue = Catalogue()
-    controller = CatalogueController(catalogue)
-    # Load a small test dataset
-    controller.load_data(path='/Users/noahmunro-kagan/Downloads/Quakephase related scripts/Quakephase Test Data/Data', directoryName=True, numberOfEvents=2)
-    parameters = '/Users/noahmunro-kagan/Downloads/Quakephase related scripts/parameters.yaml'
-    output = controller.apply_quakephase(parameters=parameters, parallelProcessing=True)
-    assert output is not None
-    print("Test passed.")
+def multiply_traces(stream):
+    multiplied_trace = Stream()
 
-# test_apply_quakephase()
-
-path = '/Users/noahmunro-kagan/Desktop/Sample_data_Noah'
-
-def test_return_loaded_data():
-    catalogue = Catalogue()
-    data = catalogue._load_data_tpc5(path)
-    assert data is not None
-    print("Data returned successfully.")
-
-def test_return_loaded_data_batched():
-    catalogue = Catalogue()
-    batch_duration = 5  # Duration in seconds for each batch
-    data = catalogue._load_data_tpc5(path, batch_duration=batch_duration)
-    assert data is not None
-    print("Data returned in batches successfully.")
+    trace_length = len(stream[0].data)
+    for trace in stream:
+        if len(trace.data) != trace_length:
+            raise ValueError("All traces in the stream must have the same length")
 
 
-import unittest
-import time
+    multiplied_data = np.full((1,trace_length),1, dtype=float)[0,:]
 
-class TestCatalogue(unittest.TestCase):
+    for trace in stream:
+        multiplied_data *= trace.data
 
-    def setUp(self):
-        self.catalogue = Catalogue()
-        self.path = '/Users/noahmunro-kagan/Desktop/Sample_data_Noah/LBQ-20220331-I-BESND_286.tpc5'  # Update this path to your test .tpc5 file
+    multiplied_trace = Trace(data=multiplied_data)
+    multiplied_trace.stats = stream[0].stats.copy()
+    multiplied_trace.stats.station = 'multiplied'
 
-    def test_load_data_tpc5_full(self):
-        start_time = time.time()
-        self.catalogue.loadData(path=self.path, isDataFile=True)
-        end_time = time.time()
-        print(f"Time taken to load full data: {end_time - start_time:.2f} seconds")
+    return multiplied_trace 
 
-        self.assertTrue(len(self.catalogue.events) > 0, "No data loaded")
-        fileNumber = list(self.catalogue.events.keys())[0]
-        self.assertIn('full', self.catalogue.events[fileNumber], "Full data not loaded correctly")
-        print(self.catalogue.events['286']['full'])
-        print("Test load full data passed.")
+# with open('/Users/noahmunro-kagan/Desktop/Quakephase Outputs/batched10ParallelA/batched10Parallelaoutput.pickle', 'rb') as f:
+#     loaded_dict = pickle.load(f)
 
-    def test_load_data_tpc5_batched(self):
-        num_batches = 5  # Number of batches to divide the data into
-        start_time = time.time()
-        self.catalogue.loadData(path=self.path, isDataFile=True, num_batches=num_batches)
-        end_time = time.time()
-        print(f"Time taken to load data in batches: {end_time - start_time:.2f} seconds")
+# catalogue = Catalogue()
+# combined_stream = catalogue.compile_batches(loaded_dict)
+# mul_stream = multiply_traces(combined_stream)
+# avg_stream = average_traces(combined_stream)
+# combined_stream += mul_stream
+# combined_stream += avg_stream
+# print(mul_stream, avg_stream)
 
-        self.assertTrue(len(self.catalogue.events) > 0, "No data loaded")
-        fileNumber = list(self.catalogue.events.keys())[0]
-        self.assertEqual(len(self.catalogue.events[fileNumber]), num_batches, "Data not loaded into correct number of batches")
-        print("Test load batched data passed.")
-        print(self.catalogue.events['286']['0'])
-
-    def tearDown(self):
-        del self.catalogue
-        gc.collect()
-
-if __name__ == '__main__':
-    unittest.main()
+# combined_stream.write('/Users/noahmunro-kagan/Desktop/Quakephase Outputs/batched10ParallelA/phasenetandallfreq.sac', format='SAC')
+# print(avg_stream[0].data)
 
 
+# Function to plot P-Wave probability with peaks
+
+
+
+def plot_pwave_probabilities(stream, station_name):
+    # Find the correct trace based on station name
+    trace = None
+    for tr in stream:
+        if tr.stats.station == station_name:
+            trace = tr
+            break
+
+    if trace is None:
+        print(f"No trace found with station name '{station_name}'")
+        return
+
+    # Extract data and time
+    data = trace.data
+    times = np.linspace(0, trace.stats.endtime - trace.stats.starttime, num=len(data))
+
+    # Find peaks
+    min_peak_height = 0.1
+    min_peak_distance = int(0.005 / trace.stats.delta)
+    peaks, _ = find_peaks(data, height=min_peak_height, distance=min_peak_distance)
+
+    # Plotting
+    plt.figure(figsize=(10, 6))
+    plt.plot(times, data, 'k-', label='P-Wave Probability')
+    plt.scatter(times[peaks], data[peaks], color='red', label='Highest Peaks', zorder=3)
+    
+    plt.yscale('log')
+    plt.xlabel('Relative Time')
+    plt.ylabel('P-Wave Probability')
+    plt.title(f'P-Wave Probability with Highest Peaks in Time Windows for Event {trace.stats.network}{trace.stats.station}')
+    plt.legend()
+
+    # Customize grid lines to appear only at powers of 10
+   
+
+    plt.show()
+
+
+# # Example usage
+# # Replace 'path_to_stream_file' with the path to your ObsPy stream file
+# stream = read('/Users/noahmunro-kagan/Desktop/Quakephase Outputs/batched10ParallelA/phasenetandallfreq18.sac')
+# print(stream)
+# station_name = 'avg'  # or 'avg'
+# plot_pwave_probabilities(stream, station_name)
+
+# newCatalogue = Catalogue()
+# path = '/Users/noahmunro-kagan/Desktop/Quakephase Outputs/phaseNet+EQT_70+100kHz+10MHz/phaseNet+EQT_70+100kHz+10MHz_10batches_25minsPerSecond.pickle'
+
+# with open(path, 'rb') as file:
+#     loaded_dict = pickle.load(file)
+
+# stream = newCatalogue.combine_streams(loaded_dict)
+# # print(stream)
+# # print(stream[0])
+# avg_stream = average_traces(stream)
+# # print(stream)
+# # print(stream[0])
+# mul_stream = multiply_traces(stream)
+# # print(stream)
+# # print(stream[0])
+
+# total_dict = {'avg': avg_stream, 'multiplied': mul_stream}
+
+# pathdump='/Users/noahmunro-kagan/Downloads/QuakephaseOutput/phaseNet+EQT_70+100kHz+10MHz_10batches_25minsPerSecond.pickle'
+
+# with open(pathdump, 'wb') as f:
+#     pickle.dump(total_dict, f)
