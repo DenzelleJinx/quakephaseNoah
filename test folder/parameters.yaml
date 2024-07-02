@@ -1,0 +1,53 @@
+MLmodel:
+    - SeisBench,PhaseNet,original
+    # - SeisBench,PhaseNet,diting
+    # - SeisBench,PhaseNet,neic
+    # - SeisBench,PhaseNet,stead
+    # - SeisBench,PhaseNet,iquique
+    # - SeisBench,PhaseNet,lendb
+    # - SeisBench,PhaseNet,ethz
+    # - SeisBench,PhaseNet,obs
+    # - SeisBench,PhaseNet,scedc
+
+    # - SeisBench,EQT,original
+    # - SeisBench,EQT,stead
+    # - SeisBench,EQT,ethz
+    # - SeisBench,EQT,iquique
+    # - SeisBench,EQT,lendb
+    # - SeisBench,EQT,obs
+    # - SeisBench,EQT,scedc
+
+overlap_ratio: 0.5
+
+rescaling: 
+    # - 20000
+    - 50000
+    # - 50000
+    - 100000 # this is what i want i think
+
+    # - 200000
+    # - 400000
+
+frequency: 
+    - None
+    - [1, 70000]
+    # - [1, 100000]
+    # - [1, 1000000]
+    # use one that is same as sta/lta triggering
+
+    # - [20000, 1000000]
+    # - [500, 1000000]
+    # - [1000, 1000000]
+    # - [10000, 1000000]
+    # - [100000, 1000000]
+
+ensemble: max
+
+pick:
+    method: threshold  # Add this line with the appropriate method
+    P_threshold: 0
+    S_threshold: 1
+
+output: prob  # pick or prob
+
+prob_sampling_rate: None  # None or float/int
