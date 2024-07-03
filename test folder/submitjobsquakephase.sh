@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=testNewWrapper      # Job name
+#SBATCH --job-name=testNewWrapperParallelDask     # Job name
 #SBATCH --output=/cluster/scratch/nmunro/Outputfile.log  # Output file
 #SBATCH --error=/cluster/scratch/nmunro/Errorfile.log  # Error file
 #SBATCH --time=01:00:00                   # Time limit hrs:min:sec

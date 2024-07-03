@@ -459,27 +459,46 @@ class AcousticEmissionWrapper:
     
     def combine_streams(self, streams_dict):
         """
-        Method which combines multiple streams into one
+        Method which combines multiple streams in a dictionary via the UTCDateTime. If there is a time difference between a 
+        Stream's endtime and the following Stream's starttime, the Trace data gap will be filled with zeros.
+
+        Parameters:
+        - streams_dict (dict): Dictionary of batched streams returned from applying Quakephase.
+
+        Returns:
+        - combined_stream (Stream): A single obspy stream containing data which is the probability of an AE event at a given point in time,
         """
         combined_stream = Stream()
 
         # Iterate through each sensor
         for station in self.sensors:
             combined_data = np.array([])
+            trace_prev = None
 
             # Iterate through each stream in the dictionary
             for key, stream in streams_dict.items():
                 # Find traces with the current station
                 for trace in stream['prob'].select(station=station, channel='prob_P'):
                     # Concatenate the data
+                    if trace_prev is not None:
+                        # Calculate the time difference between the end of the last trace and the start of the current trace
+                        time_diff = trace.stats.starttime - trace_prev.stats.endtime
+                        num_zeros_to_add = time_diff * self.samplingRate
 
+                        if num_zeros_to_add > 0:
+                            # If there's a gap, fill it with zeros
+                            zero_array = np.zeros(num_zeros_to_add)
+                            combined_data = np.concatenate((combined_data, zero_array))
+
+                    # Concatenate the current trace's data
                     combined_data = np.concatenate((combined_data, trace.data))
+                    trace_prev = trace
 
             # Create a new trace with the combined data
             if combined_data.size > 0:
 
                 new_trace = Trace(data=combined_data)
-                
+                # Set stats for the new trace
                 stats = streams_dict['0']['prob'].select(station=station, channel='prob_P')[0].stats
                 new_trace.stats.station = stats.station
                 new_trace.stats.starttime = stats.starttime
