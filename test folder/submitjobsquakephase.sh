@@ -1,11 +1,11 @@
 #!/bin/bash
 
-#SBATCH --job-name=UTCtest      # Job name
+#SBATCH --job-name=testNewWrapper      # Job name
 #SBATCH --output=/cluster/scratch/nmunro/Outputfile.log  # Output file
 #SBATCH --error=/cluster/scratch/nmunro/Errorfile.log  # Error file
-#SBATCH --time=06:00:00                   # Time limit hrs:min:sec
-#SBATCH --cpus-per-task=16             # Number of CPU cores per task
-#SBATCH --mem-per-cpu=3GB                # Total memory limit
+#SBATCH --time=01:00:00                   # Time limit hrs:min:sec
+#SBATCH --cpus-per-task=36             # Number of CPU cores per task
+#SBATCH --mem-per-cpu=2GB                # Total memory limit
 
 # Navigate to the correct directory
 cd /cluster/scratch/nmunro

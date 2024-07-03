@@ -3,7 +3,7 @@ import pstats
 import psutil
 import timeit
 import os
-from Catalogue import Catalogue, average_traces, multiply_traces
+from Catalogue import AcousticEmissionWrapper, average_traces, multiply_traces
 import gc
 import pickle
 import scipy.io
@@ -49,16 +49,17 @@ def monitor_resources(func):
 @monitor_resources
 def run_quakephase(parameters, path):
     # Initialize the Catalogue instance
-    newCatalogue = Catalogue()
+    sensors = ['A1', 'A3', 'B1', 'B3', 'C1', 'C3', 'D1', 'D3', 'E1', 'E3', 'F1', 'F3', 'G1', 'G3', 'H1', 'H3']
+    wrapper = AcousticEmissionWrapper(sensors = sensors, samplingRate = 10e6, channel = 'FPZ')
 
     # Load data
-    newCatalogue.loadData(path=path, isDataFile=True, num_batches=1)
+    wrapper.load_data(path=path, num_batches=20)
 
     # Apply quakephase
-    output = newCatalogue.applyQuakephase(parameters=parameters)
+    output = wrapper.apply_quakephase(parameters=parameters)
 
     # Save results
-    combined_stream = newCatalogue.combine_streams(output)
+    combined_stream = wrapper.combine_streams(output)
     del output
     gc.collect()
     total_out = {}
@@ -67,14 +68,14 @@ def run_quakephase(parameters, path):
     del combined_stream
     gc.collect()
 
-    with open('/cluster/scratch/nmunro/test_findUTC.pickle', 'wb') as file:
+    with open('/cluster/scratch/nmunro/testNewWrapper.pickle', 'wb') as file:
         pickle.dump(total_out, file)
         
     #save to mat file
-    mat_dict = {'multiplied': [total_out['multiplied'].data, total_out['multiplied'].stats.starttime], 'avg': [total_out['avg'].data, total_out['avg'].stats.starttime]}
+    mat_dict = {'multiplied': [total_out['multiplied'].data, total_out['multiplied'].stats.starttime.timestamp], 'avg': [total_out['avg'].data, total_out['avg'].stats.starttime.timestamp]}
     
     # Save the dictionary to a .mat file
-    scipy.io.savemat('/cluster/scratch/nmunro/test_findUTC.mat', mat_dict)
+    scipy.io.savemat('/cluster/scratch/nmunro/testNewWrapper.mat', mat_dict)
 
 def main():
     parameters = '/cluster/scratch/nmunro/quakephaseNoah/Wrapper/parameters.yaml'
