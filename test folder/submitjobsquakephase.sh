@@ -1,10 +1,10 @@
 #!/bin/bash
 
-#SBATCH --job-name=testNewWrapperParallelDask     # Job name
-#SBATCH --output=/cluster/scratch/nmunro/Outputfile.log  # Output file
-#SBATCH --error=/cluster/scratch/nmunro/Errorfile.log  # Error file
-#SBATCH --time=01:00:00                   # Time limit hrs:min:sec
-#SBATCH --cpus-per-task=36             # Number of CPU cores per task
+#SBATCH --job-name=allDotschatgpt    # Job name
+#SBATCH --output=/cluster/scratch/nmunro/Outputfilechatgpt.log  # Output file
+#SBATCH --error=/cluster/scratch/nmunro/Errorfilechatgpt.log  # Error file
+#SBATCH --time=02:00:00                   # Time limit hrs:min:sec
+#SBATCH --cpus-per-task=48             # Number of CPU cores per task
 #SBATCH --mem-per-cpu=2GB                # Total memory limit
 
 # Navigate to the correct directory

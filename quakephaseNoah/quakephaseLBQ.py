@@ -1,21 +1,29 @@
 import obspy
+from obspy.core import Stream
 import seisbench.util as sbu
 import pandas as pd
 import numpy as np
-from .load_MLmodel import load_MLmodel
+from .load_MLmodel_LBQ import load_MLmodel
 from .xprob import prob_ensemble
 from .streamprocess import stfilter, check_compile_stream, expend_trace, sbresample
 from .pfinput import load_check_input
 from .xpick import get_picks
 import gc
-from obspy import Stream
-
-import dask
-from dask import delayed, compute
-from dask.distributed import Client
 
 
 def load_models(paras):
+    """
+    Loads ML models. This method is intended to be called only by the 'apply' method.
+    
+    Parameters:
+    paras (dict): A dictionary formed from calling the method 'safe_load' on a .yaml parameters file.
+
+    Returns:
+    phasemodels (list): A list containing each loaded ML model.
+
+    Raises:
+    - ValueError: If any of the models were loaded incorrectly.
+    """
     phasemodels = []
     for imodel in paras['MLmodel']:  # loop over each model id
         for irescaling in paras['rescaling']:  # loop over each rescaling_rate
@@ -28,19 +36,24 @@ def load_models(paras):
     return phasemodels
 
 
-def apply(data, file_para='parameters.yaml'):
-    '''
-    INPUT:
-        data: obspy stream object or str or list of str;
-              if data is str or list of str, then it should be the path to the seismic data file(s)
-              which obspy can read;
-        file_para: str, path to the paramter YAML file for quakephase;
+def apply(data: Stream, file_para: str):
+    """
+    Loads and applies phase picking ML models to input data as indicated by the parameters.yaml file's instruction. 
 
-    OUTPUT:
-        output: dict, contains the following keys:
-            'prob': obspy stream object, phase probability for each station;
+    Parameters:
+    - data (Obspy Stream): An obspy Stream object containing AE data.
+    - file_para (str): str, path to the paramter YAML file for quakephase;
+
+    Returns:
+    - output (dict): Dictionary containg the following keys:
+            'prob': obspy stream object, phase probability for each station,
             'pick': list of xpick object, phase picks for each station.
-    '''
+
+    Raises:
+    - ValueError: If input data is not an obspy Stream.
+    """
+
+
 
     # load and check input parameters
     paras = load_check_input(file_para=file_para)
@@ -63,52 +76,20 @@ def apply(data, file_para='parameters.yaml'):
     station_list = list(set(itr.stats.station for itr in data))  # remove duplicates
 
     # apply model to data streams, loop over each station
-    # for istation in station_list:
-    #     istream = check_compile_stream(data.select(station=istation))  # check and compile stream, maybe can put intp apply_per_station
-    #     ioutput = apply_per_station(istream, phasemodels, paras)
-
-    #     # append results to output
-    #     if (paras['output'].lower() == 'prob') or (paras['output'].lower() == 'all'):
-    #         output['prob'] += ioutput['prob']
-    #     if (paras['output'].lower() == 'pick') or (paras['output'].lower() == 'all'):
-    #         output['pick'] += ioutput['pick']
-        
-    #     # delete istream and ioutput to save memory
-    #     del ioutput
-    #     del istream
-    #     gc.collect()
-    client = Client()
-
-    def process_station(istation, data, phasemodels, paras):
-        istream = check_compile_stream(data.select(station=istation))  # check and compile stream
+    for istation in station_list:
+        istream = check_compile_stream(data.select(station=istation))  # check and compile stream, maybe can put intp apply_per_station
         ioutput = apply_per_station(istream, phasemodels, paras)
 
-        # Collect the traces and picks to be added to the main output
-        prob_trace = ioutput['prob'] if (paras['output'].lower() == 'prob') or (paras['output'].lower() == 'all') else None
-        pick_list = ioutput['pick'] if (paras['output'].lower() == 'pick') or (paras['output'].lower() == 'all') else None
-
+        # append results to output
+        if (paras['output'].lower() == 'prob') or (paras['output'].lower() == 'all'):
+            output['prob'] += ioutput['prob']
+        if (paras['output'].lower() == 'pick') or (paras['output'].lower() == 'all'):
+            output['pick'] += ioutput['pick']
+        
         # delete istream and ioutput to save memory
         del ioutput
         del istream
         gc.collect()
-
-        return prob_trace, pick_list
-    
-    tasks = [delayed(process_station)(istation, data, phasemodels, paras) for istation in station_list]
-
-    # Compute the results in parallel
-    results = compute(*tasks)
-
-    # Aggregate the results
-    output = {'prob': Stream(), 'pick': []}
-    for prob_trace, pick_list in results:
-        if prob_trace is not None:
-            output['prob'] += prob_trace
-        if pick_list is not None:
-            output['pick'].extend(pick_list)
-
-    # Shutdown the Dask client
-    client.close()
 
     if (paras['output'].lower() == 'pick') or (paras['output'].lower() == 'all'):
         output['pick'] = sbu.PickList(sorted(output['pick']))  # sort picks
@@ -135,17 +116,25 @@ def apply(data, file_para='parameters.yaml'):
 
 
 def apply_per_station(istream, phasemodels, paras):
-    '''
-    Apply model to data streams.
-    INPUT:
-        istream: obspy stream object, should be a single station data;
-        phasemodels: list of phase ML model objects;
-        paras: dict, contains the following keys:
-            'frequency': list of frequency ranges, e.g., [None, [1, 10], [10, 20], [20, 50]];
-            'prob_sampling_rate': None or float, sampling rate for the output probability stream;
-            'ensemble': str, method for ensemble, 'pca, 'max', 'semblance', ''mean' or 'median';
+    """
+    Applies loaded ML model to obspy Stream objects containing a single trace pertaining to a specific station.
+
+
+    Parameters:
+    - istream (Stream): obspy Stream object containing data from a single station
+    - phasemodels (list): A list containing each loaded ML model.
+    - paras (dict): Dictionary containing the following keys:
+            'frequency': list of frequency ranges, e.g., [None, [1, 10], [10, 20], [20, 50]],
+            'prob_sampling_rate': None or float, sampling rate for the output probability stream,
+            'ensemble': str, method for ensemble, 'pca, 'max', 'semblance', ''mean' or 'median',
             'output': str, output type, 'prob', 'pick' or 'all'.
-    '''
+    
+    Returns:
+    - ioutput (dict):  Dictionary containg the following keys:
+                'prob': obspy stream object, phase probability for each station,
+                'pick': list of xpick object, phase picks for each station.
+
+    """
 
     probs_all = []
     for imodel in phasemodels:
@@ -181,6 +170,7 @@ def apply_per_station(istream, phasemodels, paras):
             # obtain phase probability for each model and frequency
             iprob = imodel.annotate(stream=istream)
             if ('auto_expend' in paras['data']) and (trace_expended):
+                print('trace was expended!')
                 # need to trim probability data to the original length
                 iprob.trim(starttime=itrace_starttime_min, endtime=itrace_endtime_max, nearest_sample=True)
             probs_all.append(iprob)

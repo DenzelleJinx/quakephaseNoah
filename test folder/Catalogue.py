@@ -48,7 +48,7 @@ parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.append(parent_dir)
 
 # Now you can import the quakephase module
-from quakephaseNoah import quakephase1
+from quakephaseNoah import quakephaseLBQ, quakephaseLBQParallel
 
 class AcousticEmissionWrapper:
     """
@@ -84,6 +84,10 @@ class AcousticEmissionWrapper:
         self.samplingRate = samplingRate
         self.channel = channel
         self.data_dict = {}
+        self.global_starttime = UTCDateTime()
+
+    def getSensors(self) -> list:
+        return self.sensors
 
     def load_data(self, path: str, isDirectory: bool = False, num_batches: int = 1):
         """
@@ -344,7 +348,9 @@ class AcousticEmissionWrapper:
             trace.stats.sampling_rate = self.samplingRate
             trace.stats.channel = self.channel
             trace.stats.starttime = UTCDateTime(startTime) + start_sample * trace.stats.delta
-            print(trace.stats.station, trace.stats.starttime)
+            if trace.stats.starttime < self.global_starttime:
+                self.global_starttime = trace.stats.starttime
+            # print(trace.stats.station, trace.stats.starttime)
             stream.append(trace)
 
             del traceData  # Explicitly delete traceData to free memory
@@ -378,7 +384,7 @@ class AcousticEmissionWrapper:
         else:
             raise TypeError("Input num_files_directory must be an integer greater than zero")
 
-    def apply_quakephase(self, parameters: str, useRegularPort: bool = False):
+    def apply_quakephase(self, parameters: str, useRegularPort: bool = False, isParallel: bool = False):
         """
         Apply ML picking module Quakephase to the loaded data.
 
@@ -393,7 +399,7 @@ class AcousticEmissionWrapper:
           trace represents probability of an AE event vs time
 
         Raises:
-        - ValueError: If input is incorrect
+        - ValueError: If input is incorrect.
         """
         print('applying quakephase')
         if not parameters or not parameters.strip():
@@ -402,7 +408,10 @@ class AcousticEmissionWrapper:
             raise ValueError("parameters must be a file")
 
         
-        return self._apply_quakephase_sequential(parameters, useRegularPort)
+        if isParallel:
+            return self._apply_quakephase_parallel(parameters, useRegularPort)
+        else:
+            return self._apply_quakephase_sequential(parameters, useRegularPort)
 
 
 
@@ -433,7 +442,45 @@ class AcousticEmissionWrapper:
             startEventTime = time.time()
             print(f"applying quakephase to event {key}")
             sys.stdout.flush()
-            output_dictionary[key] = quakephase1.apply(self.data_dict[key], parameters)
+            output_dictionary[key] = quakephaseLBQ.apply(self.data_dict[key], parameters)
+            print(f'time taken to apply quakephase to event {key}: {time.time() - startEventTime:.2f} seconds')
+            sys.stdout.flush()
+
+            self._clear_memory()
+            
+        elapsedTime = time.time() - startTime
+        print(f'time taken to apply quakephase: {elapsedTime:.2f} seconds')
+        sys.stdout.flush()
+        return output_dictionary
+    
+    def _apply_quakephase_parallel(self, parameters, useRegularPort=False):
+        """
+        Apply ML picking module Quakephase to the loaded data in parallel with Dask. This method is intended 
+        for internal use only and should only be called by the 'apply_quakephase' method.
+
+        Parameters:
+        parameters (str): Path to a .yaml file containing the parameters for applying Quakephase.
+        useRegularPort (bool): Indication if port 22 should be used when calling a seisbench model from 
+            inside quakephase. Should be used on a cluster first time Quakephase is run.
+
+
+        Returns:
+        - a dictionary containing a corresponding streams and traces to the self.data_dict, where each 
+          trace represents probability of an AE event vs time
+
+        Raises:
+        - ValueError: If input is incorrect
+        """
+        if useRegularPort:
+            seisbench.use_backup_repository()
+        startTime = time.time()
+        output_dictionary = {}
+        
+        for key in self.data_dict:
+            startEventTime = time.time()
+            print(f"applying quakephase to event {key}")
+            sys.stdout.flush()
+            output_dictionary[key] = quakephaseLBQParallel.apply(self.data_dict[key], parameters)
             print(f'time taken to apply quakephase to event {key}: {time.time() - startEventTime:.2f} seconds')
             sys.stdout.flush()
 
@@ -453,14 +500,23 @@ class AcousticEmissionWrapper:
         print(f'Current memory usage: {memory_usage:.2f} MB')
 
     def get_memory_usage(self):
+        """
+        Returns the current local memory usage.
+        
+        Parameters:
+        None
+        
+        Returns:
+        mem_info: A string detailing the current memory usage within a computer system."""
         process = psutil.Process(os.getpid())
         mem_info = process.memory_info()
         return mem_info.rss / (1024 ** 2)
     
     def combine_streams(self, streams_dict):
         """
-        Method which combines multiple streams in a dictionary via the UTCDateTime. If there is a time difference between a 
-        Stream's endtime and the following Stream's starttime, the Trace data gap will be filled with zeros.
+        Combines multiple ObsPy streams from a dictionary into a single stream. This method handles gaps between consecutive streams by filling
+        them with zeros to ensure continuous data. It iterates over each sensor station and concatenates the data of traces with matching
+        stations, handling time gaps appropriately.
 
         Parameters:
         - streams_dict (dict): Dictionary of batched streams returned from applying Quakephase.
@@ -487,7 +543,15 @@ class AcousticEmissionWrapper:
 
                         if num_zeros_to_add > 0:
                             # If there's a gap, fill it with zeros
-                            zero_array = np.zeros(num_zeros_to_add)
+                            zero_array = np.zeros(int(num_zeros_to_add))
+                            combined_data = np.concatenate((combined_data, zero_array))
+                    else:
+                        time_diff = trace.stats.starttime - self.global_starttime
+                        num_zeros_to_add = time_diff * self.samplingRate
+
+                        if num_zeros_to_add > 0:
+                            # If there's a gap, fill it with zeros
+                            zero_array = np.zeros(int(num_zeros_to_add))
                             combined_data = np.concatenate((combined_data, zero_array))
 
                     # Concatenate the current trace's data
@@ -533,6 +597,8 @@ class AcousticEmissionWrapperController:
         return self.acousticEmissionWrapper.get_memory_usage()
 
 def average_traces(stream):
+    """
+    Averages all trace's """
     if not isinstance(stream, Stream):
         raise TypeError("Input must be an ObsPy Stream object")
     
@@ -556,7 +622,7 @@ def average_traces(stream):
     return averaged_trace
 
 def multiply_traces(stream):
-    multiplied_trace = Stream()
+    multiplied_trace = Trace()
 
     trace_length = len(stream[0].data)
     for trace in stream:
@@ -612,3 +678,5 @@ def plot_pwave_probabilities(stream, station_name):
    
 
     plt.show()
+
+
