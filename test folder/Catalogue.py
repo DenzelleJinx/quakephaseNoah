@@ -548,6 +548,7 @@ class AcousticEmissionWrapper:
                     else:
                         time_diff = trace.stats.starttime - self.global_starttime
                         num_zeros_to_add = time_diff * self.samplingRate
+                        trace.stats.starttime = self.global_starttime
 
                         if num_zeros_to_add > 0:
                             # If there's a gap, fill it with zeros
